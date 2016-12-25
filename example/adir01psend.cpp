@@ -166,7 +166,7 @@ int main(int argc, char** argv) {
         }
 
         if(printUsage) {
-            cerr << "Usage: << " << argv[0] << " {COMMAND [help] | help}\n"
+            cerr << "Usage: " << argv[0] << " {COMMAND [help] | help}\n"
                  << "COMMAND\n"
                  << "    r    Read IR data and write to file or stdout\n"
                  << "    s    Send IR data from file or stdin\n"
