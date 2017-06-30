@@ -6,6 +6,7 @@
 #include <vector>
 #include <libusb-1.0/libusb.h>
 
+#include <memory>
 #include <iostream>
 #include <thread>
 
@@ -101,6 +102,15 @@ namespace {
     bool isUSBIOPrint() {
         return enableUSBIOPrint;
     }
+
+    auto makeLibusbContext() {
+        libusb_context* libusbContext;
+        if(libusb_init(&libusbContext) != 0)
+            throw std::runtime_error("Failed to call libusb_init");
+        auto deleter = [](libusb_context* p) {
+            libusb_exit(p);};
+        return unique_ptr<libusb_context, decltype(deleter)>(libusbContext, deleter);
+    }
 }
 
 class libusbException : public std::runtime_error {
@@ -116,11 +126,9 @@ public:
 
 class adir01pcpp::adir01pcppImpl {
 public:
-    adir01pcppImpl() {
-        if(libusb_init(&libusbContext) != 0)
-            throw std::runtime_error("Failed to call libusb_init");
+    adir01pcppImpl(): libusbContext(makeLibusbContext()) {
         libusb_device **devList;
-        const auto numDevices = libusb_get_device_list(libusbContext, &devList);
+        const auto numDevices = libusb_get_device_list(libusbContext.get(), &devList);
         if(numDevices < 0)
             throw libusbException(numDevices);
         for(int i=0; i<numDevices; ++i) {
@@ -161,7 +169,6 @@ public:
             libusb_release_interface(devHandle, interfaceNum);
             libusb_close(devHandle);
         }
-        libusb_exit(libusbContext);
     }
 
     std::string getFirmwareVersion() {
@@ -359,7 +366,7 @@ private:
         }
     };
 
-    libusb_context* libusbContext;
+    decltype(makeLibusbContext()) libusbContext;
     struct libusb_device_handle *devHandle = NULL;
 };
 
