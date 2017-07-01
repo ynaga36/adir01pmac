@@ -124,29 +124,51 @@ public:
     }
 };
 
-class adir01pcpp::adir01pcppImpl {
-public:
-    adir01pcppImpl(): libusbContext(makeLibusbContext()) {
-        libusb_device **devList;
-        const auto numDevices = libusb_get_device_list(libusbContext.get(), &devList);
-        if(numDevices < 0)
-            throw libusbException(numDevices);
-        for(int i=0; i<numDevices; ++i) {
-            auto const dev = devList[i];
-            struct libusb_device_descriptor desc;
-            libusb_get_device_descriptor(dev, &desc);
-            if(desc.idVendor != idVendor || desc.idProduct != idProduct)
-                continue;
+namespace {
+    auto openDevHandle(libusb_context* libusbContext) {
+        struct libusb_device_handle *devHandle = NULL;
 
-            const auto ret = libusb_open(dev, &devHandle);
-            if(ret < 0)
-                throw libusbException(ret);
-            break;
+        {
+            libusb_device **devList;
+            const auto numDevices = libusb_get_device_list(libusbContext, &devList);
+            if(numDevices < 0)
+                throw libusbException(numDevices);
+            auto deleter = [](libusb_device **devList) {
+                libusb_free_device_list(devList, 1);
+            };
+            auto pdevList = unique_ptr<libusb_device*[], decltype(deleter)>(devList, deleter);
+
+            for(int i=0; i<numDevices; ++i) {
+                auto const dev = pdevList[i];
+                struct libusb_device_descriptor desc;
+                libusb_get_device_descriptor(dev, &desc);
+                if(desc.idVendor != idVendor || desc.idProduct != idProduct)
+                    continue;
+
+                const auto ret = libusb_open(dev, &devHandle);
+                if(ret < 0)
+                    throw libusbException(ret);
+                break;
+            }
         }
 
-        libusb_free_device_list(devList, 1);
-        if(devHandle == NULL)
+        auto deleter = [](struct libusb_device_handle* devHandle) {
+            libusb_release_interface(devHandle, interfaceNum);
+            libusb_close(devHandle);
+        };
+
+        return unique_ptr<struct libusb_device_handle, decltype(deleter)>(devHandle, deleter);
+    }
+}
+
+class adir01pcpp::adir01pcppImpl {
+public:
+    adir01pcppImpl():
+        libusbContext(makeLibusbContext()),
+        devHandle(openDevHandle(libusbContext.get())) {
+        if(!devHandle)
             throw std::runtime_error("ADIR01P was not found");
+        auto devHandle = this->devHandle.get();
         {
             const auto ret = libusb_kernel_driver_active(devHandle,interfaceNum);
             if(ret == 1){
@@ -165,14 +187,10 @@ public:
     }
 
     ~adir01pcppImpl() {
-        if(devHandle != 0) {
-            libusb_release_interface(devHandle, interfaceNum);
-            libusb_close(devHandle);
-        }
     }
 
     std::string getFirmwareVersion() {
-        deviceIO io(devHandle, deviceCmds::getFirmwareVersion);
+        deviceIO io(devHandle.get(), deviceCmds::getFirmwareVersion);
         io.buffer[PacketSize-1] = 0;
         return std::string(reinterpret_cast<char*>(io.buffer + 1));
     }
@@ -182,7 +200,7 @@ public:
             clog << "readStartReq\n";
 
         deviceIO io(
-            devHandle,
+            devHandle.get(),
             deviceCmds::readStartReq, frequency,
             uint8_t(0),     // 読み込み停止フラグ　停止なし
             uint16_t(0),    // 読み込み停止ON時間
@@ -194,7 +212,7 @@ public:
         if(isDebugPrint())
             clog << "readStopReq\n";
 
-        deviceIO io(devHandle, deviceCmds::readStopReq);
+        deviceIO io(devHandle.get(), deviceCmds::readStopReq);
         if(io.buffer[1] != 0) {
             throw std::runtime_error("Failed to read IR data");
         }
@@ -216,7 +234,7 @@ public:
         if(isDebugPrint())
             clog << "getSendStatus\n";
 
-        deviceIO io(devHandle, deviceCmds::getSendStatusReq);
+        deviceIO io(devHandle.get(), deviceCmds::getSendStatusReq);
 
         size_t p = 2;
         return io.get<uint8_t>(p) != 0;
@@ -231,7 +249,7 @@ public:
         assert(pos < totalSize);
 
         deviceIO io(
-            devHandle,
+            devHandle.get(),
             deviceCmds::setSendDataReq,
             totalSize,
             pos,
@@ -244,7 +262,7 @@ public:
 
     void sendDataReq(uint16_t frequency, uint16_t size) {
         deviceIO io(
-            devHandle,
+            devHandle.get(),
             deviceCmds::sendDataReq,
             frequency,
             size);
@@ -253,7 +271,7 @@ public:
 private:
 
     bool getData(IRData& irdata, uint8_t cmd) {
-        deviceIO io(devHandle, cmd);
+        deviceIO io(devHandle.get(), cmd);
         size_t p = 1;
         const auto totalSize    = io.get<uint16_t>(p);
         if(totalSize == 0)
@@ -367,7 +385,7 @@ private:
     };
 
     decltype(makeLibusbContext()) libusbContext;
-    struct libusb_device_handle *devHandle = NULL;
+    decltype(openDevHandle(libusbContext.get())) devHandle;
 };
 
 adir01pcpp::adir01pcpp():
